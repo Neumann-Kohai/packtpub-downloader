@@ -56,10 +56,9 @@ class User(AuthBase):
 
         #stolen from https://github.com/psf/requests/blob/main/requests/auth.py
         prep = r.request.copy()
-        extract_cookies_to_jar(prep._cookies, r.request, r.raw)
+        extract_cookies_to_jar(prep._cookies, r.request, r.raw) #type: ignore
         prep.headers['Authorization'] = self.token
-        prep.register_hook('response', self.test)
-        _r = r.connection.send(prep, **kwargs)
+        _r = r.connection.send(prep, **kwargs) #type: ignore
         _r.history.append(r)
         _r.request = prep
 
