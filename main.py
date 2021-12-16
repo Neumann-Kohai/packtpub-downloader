@@ -1,25 +1,24 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/python
 
-from __future__ import print_function
-import os
 import sys
-import glob
 import math
 import argparse
-import requests
+from requests import Session
 from tqdm import tqdm, trange
-from config import BASE_URL, PRODUCTS_ENDPOINT, URL_BOOK_TYPES_ENDPOINT, URL_BOOK_ENDPOINT
+from config import *
 from user import User
+import requests
+import pathlib
 
 
 # TODO: I should do a function that his only purpose is to request and return data
-def book_request(user, offset=0, limit=10, verbose=False):
+def book_request(session, offset=0, limit=10, verbose=False):
     data = []
     url = BASE_URL + PRODUCTS_ENDPOINT.format(offset=offset, limit=limit)
     if verbose:
         print(url)
-    r = requests.get(url, headers=user.get_header())
+    r = session.get(url)
     data += r.json().get('data', [])
 
     return url, r, data
@@ -52,20 +51,17 @@ def get_books(user, offset=0, limit=10, is_verbose=False, is_quiet=False):
     return data
 
 
-def get_url_book(user, book_id, format='pdf'):
+def get_url_book(session, book_id, format='pdf'):
     '''
         Return url of the book to download
     '''
 
     url = BASE_URL + URL_BOOK_ENDPOINT.format(book_id=book_id, format=format)
-    r = requests.get(url, headers=user.get_header())
+    r = session.get(url)
 
     if r.status_code == 200:  # success
         return r.json().get('data', '')
 
-    elif r.status_code == 401:  # jwt expired
-        user.refresh_header()  # refresh token
-        get_url_book(user, book_id, format)  # call recursive
 
     print('ERROR (please copy and paste in the issue)')
     print(r.json())
@@ -73,20 +69,16 @@ def get_url_book(user, book_id, format='pdf'):
     return ''
 
 
-def get_book_file_types(user, book_id):
+def get_book_file_types(session, book_id):
     '''
         Return a list with file types of a book
     '''
 
     url = BASE_URL + URL_BOOK_TYPES_ENDPOINT.format(book_id=book_id)
-    r = requests.get(url, headers=user.get_header())
+    r = session.get(url)
 
     if (r.status_code == 200):  # success
         return r.json()['data'][0].get('fileTypes', [])
-
-    elif (r.status_code == 401):  # jwt expired
-        user.refresh_header()  # refresh token
-        get_book_file_types(user, book_id, format)  # call recursive
 
     print('ERROR (please copy and paste in the issue)')
     print(r.json())
@@ -95,83 +87,78 @@ def get_book_file_types(user, book_id):
 
 
 # TODO: i'd like that this functions be async and download faster
-def download_book(filename, url):
+def download_book(filename: pathlib.Path, url):
     '''
         Download your book
     '''
-    print(f"Starting to download {filename.split('/')[-1]}")
+    print(f"Starting to download {filename.name}")
 
-    with open(filename, 'wb') as f:
+    with filename.open("wb") as f:
         r = requests.get(url, stream=True)
         total = r.headers.get('content-length')
         if total is None:
             f.write(r.content)
         else:
-            total = int(total)
             # TODO: read more about tqdm
-            for chunk in tqdm(r.iter_content(chunk_size=1024), total=math.ceil(total//1024), unit='KB', unit_scale=True):
+            for chunk in tqdm(r.iter_content(chunk_size=1024), total=math.ceil(int(total)//1024), unit='KB', unit_scale=True):
                 if chunk:  # filter out keep-alive new chunks
                     f.write(chunk)
                     f.flush()
-            print(f"Finished {filename.split('/')[-1]}")
+            print(f"Finished {filename.name}")
 
 
-def make_zip(filename):
-    if filename[-4:] == 'code':
-        os.replace(filename, filename[:-4] + 'zip')
+def make_zip(filename: pathlib.Path):
+    if filename.suffix == '.code':
+        filename.rename(filename.with_suffix('.zip'))
 
 
-def move_current_files(root, book):
-    sub_dir = f'{root}/{book}'
-    does_dir_exist(sub_dir)
-    for f in glob.iglob(sub_dir + '.*'):
+def move_current_files(root: pathlib.Path, book):
+    sub_dir: pathlib.Path = root / book
+    sub_dir.mkdir(parents=True, exist_ok=True)
+    for f in root.glob(f"{book}.*"):
         try:
-            os.rename(f, f'{sub_dir}/{book}' + f[f.index('.'):])
-        except OSError:
-            os.rename(f, f'{sub_dir}/{book}' + '_1' + f[f.index('.'):])
+            if (sub_dir / f.name).exists():
+                f.rename((sub_dir / f.stem).with_stem(f"{f.stem}_1").with_suffix(f.suffix))
+            else:
+                f.rename(sub_dir / f.name)
         except ValueError as e:
             print(e)
             print('Skipping')
 
 
-def does_dir_exist(directory):
-    if not os.path.exists(directory):
-        try:
-            os.makedirs(directory)
-        except Exception as e:
-            print(e)
-            sys.exit(2)
-
-
 def main():
-    # thanks to https://github.com/ozzieperez/packtpub-library-downloader/blob/master/downloader.py
-
-    parser = argparse.ArgumentParser(
-        usage="Usage: main.py -e <email> -p <password> [-d <directory> -b <book file types> -s -v -q]")
-    parser.add_argument('-e', '--email', help='Your email', required=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-e', '--email', help='Your email', required=False)
     parser.add_argument('-p', '--password',
-                        help='Your password', required=True)
+                        help='Your password', required=False)
     parser.add_argument('-d', '--directory',
-                        help='Directory to save your books', required=False, dest="root_directory", type=lambda d: os.path.expanduser(d) if '~' in d else os.path.abspath(d))
+                        help='Directory to save your books',  dest="root_directory", default="./media", type=lambda d: pathlib.Path(d).expanduser())
     parser.add_argument('-b', '--book-file-types', help='Book file types to download',
-                        required=False, choices=("pdf", "mobi", "epub", "code"), nargs='*', default="pdf")
+                        choices=("pdf", "mobi", "epub", "code"), nargs='*', default="pdf")
+    parser.add_argument('-s', '--separate', help='Separate books by type',
+                         action='store_true')
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument('-v', '--verbose', help='Verbose',
-                       required=False, action='store_true')
+                        action='store_true')
     group.add_argument('-q', '--quiet', help='Quiet',
-                       required=False, action='store_true')
+                       action='store_true')
 
-    parser.add_argument('-s', '--separate', help='Separate books by type',
-                        required=False, action='store_true')
 
     args = parser.parse_args()
 
+    # create Session
+    session = Session()
+    session.headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36",
+    }
     # create user with his properly header
-    user = User(args.email, args.password)
-    print(args)
+    session.auth = User(args.email, args.password, session=session)
+    args.root_directory.mkdir(parents=True, exist_ok=True)
+
     # get all your books
-    books = get_books(user, is_verbose=args.verbose, is_quiet=args.quiet)
+    books = get_books(session, is_verbose=args.verbose, is_quiet=args.quiet)
     print('Downloading books...')
     if not args.quiet:
         books_iter = tqdm(books, unit='Book')
@@ -179,25 +166,25 @@ def main():
         books_iter = books
     for book in books_iter:
         # get the different file type of current book
-        file_types = get_book_file_types(user, book['productId'])
+        file_types = get_book_file_types(session, book['productId'])
         for file_type in file_types:
             # check if the file type entered is available by the current book
             if file_type in args.book_file_types:
                 book_name = book['productName'].replace(' ', '_').replace(
                     '.', '_').replace(':', '_').replace('/', '')
                 if args.separate:
-                    filename = f'{args.root_directory}/{book_name}/{book_name}.{file_type}'
+                    filename = args.root_directory/f"{book_name}/{book_name}.{file_type}"
                     move_current_files(args.root_directory, book_name)
                 else:
-                    filename = f'{args.root_directory}/{book_name}.{file_type}'
+                    filename = args.root_directory / f"{book_name}.{file_type}"
                 # get url of the book to download
-                url = get_url_book(user, book['productId'], file_type)
-                if not os.path.exists(filename) and not os.path.exists(filename.replace('.code', '.zip')):
+                url = get_url_book(session, book['productId'], file_type)
+                if not filename.exists() and not pathlib.Path(filename.stem + ".zip").exists():
                     download_book(filename, url)
                     make_zip(filename)
                 else:
                     if args.verbose:
-                        tqdm.write(f'{filename} already exists, skipping.')
+                        tqdm.write(f'{filename.name} already exists, skipping.')
 
 
 if __name__ == '__main__':

@@ -1,28 +1,23 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import print_function
 import sys
 import requests
 from config import BASE_URL, AUTH_ENDPOINT
+from requests.auth import AuthBase
+from requests.cookies import extract_cookies_to_jar
 
-
-class User:
+class User(AuthBase):
     """
-        User object that contain his header 
+        User object to be used as auth in requests
     """
-    username = ""
-    password = ""
     # need to fill Authoritazion with current token provide by api
-    header = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36",
-        "Authorization": ""
-    }
 
-    def __init__(self, username, password):
+
+    def __init__(self, username, password, session = None):
         self.username = username
         self.password = password
-        self.header["Authorization"] = self.get_token()
+        self.session = session or requests.Session()
+        self.token = self.get_token()
 
     def get_token(self):
         """
@@ -30,24 +25,42 @@ class User:
         """
         url = BASE_URL+AUTH_ENDPOINT
         # use json paramenter because for any reason they send user and pass in plain text :'(
-        r = requests.post(
+        r = self.session.post(
             url, json={'username': self.username, 'password': self.password})
         if r.status_code == 200:
             print("You are in!")
             return 'Bearer ' + r.json()['data']['access']
 
-        # except should happend when user and pass are incorrect
         print("Error login,  check user and password")
         print("Error {}".format(r.json()["message"]))
         sys.exit(2)
-
-    def get_header(self):
-        return self.header
 
     def refresh_header(self):
         """
             Refresh jwt because it expired and returned
         """
-        self.header["Authorization"] = self.get_token()
+        self.token = self.get_token()
 
         return self.header
+
+    def __call__(self, r):
+        r.headers["Authorization"] = self.token
+        r.register_hook('response', self.handle_401)
+        return r
+
+    def handle_401(self, r: requests.Response, *args, **kwargs):
+        if not r.status_code == 401:
+            return r
+        r.content
+        r.close()
+
+        #stolen from https://github.com/psf/requests/blob/main/requests/auth.py
+        prep = r.request.copy()
+        extract_cookies_to_jar(prep._cookies, r.request, r.raw)
+        prep.headers['Authorization'] = self.token
+        prep.register_hook('response', self.test)
+        _r = r.connection.send(prep, **kwargs)
+        _r.history.append(r)
+        _r.request = prep
+
+        return _r 
