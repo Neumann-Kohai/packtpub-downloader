@@ -109,3 +109,6 @@ venv.bak/
 .vscode/
 
 Downloaded Library/
+media/
+
+mitmproxy-ca-cert.pem

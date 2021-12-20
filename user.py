@@ -35,22 +35,19 @@ class User(AuthBase):
         print("Error {}".format(r.json()["message"]))
         sys.exit(2)
 
-    def refresh_header(self):
-        """
-            Refresh jwt because it expired and returned
-        """
-        self.token = self.get_token()
-
-        return self.header
-
     def __call__(self, r):
-        r.headers["Authorization"] = self.token
-        r.register_hook('response', self.handle_401)
+        if r.url.startswith(BASE_URL):
+            r.headers["Authorization"] = self.token
+            r.register_hook('response', self.handle_401)
         return r
 
     def handle_401(self, r: requests.Response, *args, **kwargs):
         if not r.status_code == 401:
             return r
+        print("Token expired, refreshing...")
+
+        self.token = self.get_token()
+
         r.content
         r.close()
 
